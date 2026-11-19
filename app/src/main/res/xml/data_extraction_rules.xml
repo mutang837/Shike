@@ -1,0 +1,1 @@
+<data-extraction-rules><cloud-backup disableIfNoEncryptionCapabilities="true"><include domain="file" path="portable/"/></cloud-backup><device-transfer><include domain="file" path="portable/"/></device-transfer></data-extraction-rules>
