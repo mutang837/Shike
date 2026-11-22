@@ -12,8 +12,8 @@ android {
         applicationId = "dev.shike"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-alpha"
+        versionCode = 3
+        versionName = "0.2.1-alpha"
         resValue("string", "app_name", "拾刻")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

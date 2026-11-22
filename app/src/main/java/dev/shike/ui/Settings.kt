@@ -16,7 +16,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.*
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -274,16 +278,7 @@ fun SettingsPage(data: AppData, vm: AppViewModel, page: (String) -> Unit, activi
                                     )
                                 )
                             }
-                            HexColorField("浅色背景", s.background) { change(s.copy(background = it)) }
-                            HexColorField("浅色卡片", s.surface) { change(s.copy(surface = it)) }
-                            HexColorField("浅色文字", s.text) { change(s.copy(text = it)) }
-                            HexColorField("深色背景", s.darkBackground) {
-                                change(s.copy(darkBackground = it))
-                            }
-                            HexColorField("深色卡片", s.darkSurface) {
-                                change(s.copy(darkSurface = it))
-                            }
-                            HexColorField("深色文字", s.darkText) { change(s.copy(darkText = it)) }
+                            CustomColorsSetting(s, change)
                             Choice(
                                 "字体",
                                 s.font,
@@ -497,7 +492,7 @@ fun SettingsPage(data: AppData, vm: AppViewModel, page: (String) -> Unit, activi
         }
         item {
             Text(
-                "拾刻 · 0.2.0",
+                "拾刻 · ${dev.shike.BuildConfig.VERSION_NAME.substringBefore("-")}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -687,9 +682,64 @@ private fun NumberSetting(label: String, original: Int, maximum: Int, save: (Int
 }
 
 @Composable
+private fun CustomColorsSetting(s: Appearance, change: (Appearance) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val drafts = rememberSaveableStateHolder()
+    val colors = MaterialTheme.colorScheme
+    val customCount = listOf(s.background, s.surface, s.text, s.darkBackground, s.darkSurface, s.darkText)
+        .count { it != 0L }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, colors.outlineVariant),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .semantics { stateDescription = if (expanded) "已展开" else "已折叠" }
+                    .clickable(role = Role.Button) { expanded = !expanded }
+                    .heightIn(min = 56.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("自定义颜色", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (customCount == 0) "浅色与深色 · 使用默认配色" else "已自定义 $customCount / 6 项",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                    )
+                }
+                Icon(if (expanded) ShikeIcons.ExpandLess else ShikeIcons.ExpandMore, null, tint = colors.onSurfaceVariant)
+            }
+            if (expanded) {
+                HorizontalDivider(color = colors.outlineVariant)
+                drafts.SaveableStateProvider("custom_colors") {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("浅色模式", style = MaterialTheme.typography.labelLarge, color = colors.primary)
+                        HexColorField("浅色背景", s.background) { change(s.copy(background = it)) }
+                        HexColorField("浅色卡片", s.surface) { change(s.copy(surface = it)) }
+                        HexColorField("浅色文字", s.text) { change(s.copy(text = it)) }
+                        Spacer(Modifier.height(4.dp))
+                        HorizontalDivider(color = colors.outlineVariant)
+                        Text("深色模式", style = MaterialTheme.typography.labelLarge, color = colors.primary)
+                        HexColorField("深色背景", s.darkBackground) { change(s.copy(darkBackground = it)) }
+                        HexColorField("深色卡片", s.darkSurface) { change(s.copy(darkSurface = it)) }
+                        HexColorField("深色文字", s.darkText) { change(s.copy(darkText = it)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HexColorField(label: String, original: Long, save: (Long) -> Unit) {
     val initial = if (original == 0L) "" else "%06X".format(original and 0xFFFFFF)
-    var value by remember(original) { mutableStateOf(initial) }
+    var value by rememberSaveable(original) { mutableStateOf(initial) }
     OutlinedTextField(
         value,
         { value = it.filter { c -> c.isDigit() || c.lowercaseChar() in 'a'..'f' }.take(6) },
