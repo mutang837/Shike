@@ -34,22 +34,29 @@ val modules =
 
 @Composable
 fun Overview(data: AppData, page: (String) -> Unit) {
+    val groups = listOf(
+        "安排与记录" to listOf("TASK", "SERIES", "HABIT", "NOTE", "PLAN", "EVENT"),
+        "时间与回顾" to listOf("calendar", "statistics", "review"),
+        "整理与管理" to listOf("FOLDER", "TAG", "CATEGORY", "spaces", "trash"),
+    )
     LazyColumn(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 104.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { SectionTitle("综合", "管理记录、计划和工作空间") }
-        items(modules.chunked(2)) { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { SectionTitle("综合") }
+        groups.forEach { (title, keys) ->
+          item { Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+          items(keys.chunked(2)) { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 row.forEach { k ->
                     Surface(
                         onClick = { page(k) },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surface,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     ) {
-                        Column(Modifier.padding(16.dp)) {
+                        Column(Modifier.fillMaxWidth().heightIn(min = 108.dp).padding(16.dp)) {
                             Icon(
                                 when (k) {
                                     "calendar" -> kindIcon("EVENT")
@@ -64,7 +71,7 @@ fun Overview(data: AppData, page: (String) -> Unit) {
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(pageTitle(k), style = MaterialTheme.typography.titleSmall)
-                            val count = data.active.count { it.kind == k }
+                            val count = if (k == "TASK") TaskViews.queue(data.items).size else data.active.count { it.kind == k }
                             if (count > 0)
                                 Text(
                                     "${count} 项",
@@ -74,7 +81,9 @@ fun Overview(data: AppData, page: (String) -> Unit) {
                         }
                     }
                 }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
+          }
         }
     }
 }
@@ -141,18 +150,16 @@ fun CollectionPage(
     toggle: (Item) -> Unit,
     add: (String) -> Unit,
 ) {
-    var filter by rememberSaveable(kind) { mutableStateOf("all") }
-    var sort by rememberSaveable(kind) { mutableStateOf("newest") }
+    var filter by rememberSaveable(kind) { mutableStateOf(if (kind == "TASK") "open" else "all") }
+    var sort by rememberSaveable(kind) { mutableStateOf(if (kind == "TASK") "due" else "newest") }
     var organizer by rememberSaveable(kind) { mutableStateOf("") }
     var tag by rememberSaveable(kind) { mutableStateOf("") }
     var options by rememberSaveable(kind) { mutableStateOf(false) }
+    val now = LocalShikeNow.current
     val visible =
-        data.active
+        (if (kind == "TASK") TaskViews.collection(data.items, filter, now) else data.active)
             .filter { item ->
                 item.kind == kind &&
-                    (filter == "all" ||
-                        filter == "open" && item.state in listOf("TODO", "DOING", "PAUSED") ||
-                        filter == item.state) &&
                     (organizer.isBlank() ||
                         organizer == "none" && data.active.none { it.id == item.folderId } ||
                         organizer == item.folderId ||
@@ -169,11 +176,11 @@ fun CollectionPage(
             }
     LazyColumn(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                FilledTonalButton(onClick = { add(kind) }) {
+            Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { add(kind) }) {
                     Icon(ShikeIcons.Add, null)
                     Spacer(Modifier.width(6.dp))
                     Text("创建" + pageTitle(kind))
@@ -184,14 +191,24 @@ fun CollectionPage(
                 }
             }
         }
+        if (kind == "TASK") item {
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("open" to "待处理", "DONE" to "已完成").forEach { (key, title) ->
+                    FilterChip(selected = filter == key, onClick = { filter = key }, label = { Text(title) })
+                }
+                if (filter !in listOf("open", "DONE")) {
+                    FilterChip(selected = true, onClick = { options = true }, label = { Text(if (filter == "all") "全部记录" else TaskState.valueOf(filter).label) })
+                }
+            }
+        }
         if (options)
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (kind == "TASK")
                         Choice(
                             "状态",
                             filter,
-                            listOf("all" to "全部", "open" to "待处理") +
+                            listOf("all" to "全部记录（含重复实例）", "open" to "待处理") +
                                 TaskState.entries.map { it.name to it.label },
                             { filter = it },
                         )
@@ -226,12 +243,25 @@ fun CollectionPage(
                     )
                 }
             }
-        if (visible.isEmpty())
-            item { Surface(shape = RoundedCornerShape(12.dp)) { EmptyState(kind) { add(kind) } } }
-        items(visible, key = { it.id }) { entry ->
+        item {
+            Text("${visible.size} 项", Modifier.padding(bottom = 8.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (visible.isEmpty()) item {
+            Surface(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                if (kind == "TASK" && filter == "DONE") Text("暂无已完成任务", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else EmptyState(kind) { add(kind) }
+            }
+        }
+        itemsIndexed(visible, key = { _, entry -> entry.id }) { index, entry ->
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(
+                    topStart = if (index == 0) 16.dp else 0.dp,
+                    topEnd = if (index == 0) 16.dp else 0.dp,
+                    bottomStart = if (index == visible.lastIndex) 16.dp else 0.dp,
+                    bottomEnd = if (index == visible.lastIndex) 16.dp else 0.dp,
+                ),
+                color = MaterialTheme.colorScheme.surface,
             ) {
                 Column(Modifier.padding(horizontal = 12.dp)) {
                     entry.parentId?.let { parent ->
@@ -247,6 +277,7 @@ fun CollectionPage(
                             }
                     }
                     ItemRow(entry, data, open, toggle)
+                    if (index != visible.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
@@ -258,18 +289,19 @@ fun SearchDialog(data: AppData, vm: AppViewModel, close: () -> Unit, open: (Item
     var query by rememberSaveable { mutableStateOf("") }
     var kind by rememberSaveable { mutableStateOf("") }
     var advanced by rememberSaveable { mutableStateOf(false) }
+    var includeHistory by rememberSaveable { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<Item>>(emptyList()) }
     val recent =
         data.config
             .find { it.key == "searchHistory" }
             ?.let { runCatching { json.decodeFromString<List<String>>(it.value) }.getOrNull() }
             .orEmpty()
-    LaunchedEffect(query, kind, data.active, data.settings) {
+    LaunchedEffect(query, kind, includeHistory, data.active, data.settings) {
         results =
             if (query.isBlank()) emptyList()
             else
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    data.active
+                    (if (includeHistory) data.active else data.active.filter { it.kind != "TASK" } + TaskViews.queue(data.items))
                         .asSequence()
                         .filter { kind.isBlank() || it.kind == kind }
                         .filter { item ->
@@ -326,13 +358,15 @@ fun SearchDialog(data: AppData, vm: AppViewModel, close: () -> Unit, open: (Item
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (advanced)
+                if (advanced) {
                     Choice(
                         "对象类型",
                         kind,
                         listOf("" to "全部") + Kind.entries.map { it.name to it.label },
                         { kind = it },
                     )
+                    SettingSwitch("包含已完成与重复历史", checked = includeHistory, onChange = { includeHistory = it })
+                }
                 if (query.isBlank() && recent.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("最近搜索", Modifier.weight(1f))
@@ -385,15 +419,27 @@ fun CalendarPage(
     data: AppData,
     open: (Item) -> Unit,
     toggle: (Item) -> Unit,
+    checkHabit: (Item, LocalDate) -> Unit,
+    loadRange: (LocalDate, LocalDate) -> Unit,
     add: (LocalDate) -> Unit,
 ) {
     val today = LocalDate.now()
     var rawDay by rememberSaveable { mutableStateOf(today.toString()) }
     var mode by rememberSaveable { mutableStateOf("month") }
     var filter by rememberSaveable { mutableStateOf("") }
+    var showCompleted by rememberSaveable { mutableStateOf(false) }
     val day = LocalDate.parse(rawDay)
     val month = YearMonth.from(day)
     val firstWeekday = DayOfWeek.of(data.settings.weekStart.coerceIn(1, 7))
+    val rangeStart = when (mode) {
+        "month" -> month.atDay(1).with(java.time.temporal.TemporalAdjusters.previousOrSame(firstWeekday))
+        "week" -> day.with(java.time.temporal.TemporalAdjusters.previousOrSame(firstWeekday))
+        else -> day
+    }
+    val rangeEnd = rangeStart.plusDays(when (mode) { "month" -> 41; "week" -> 6; else -> 0 }.toLong())
+    val seriesRevision = data.items.filter { it.kind == "SERIES" }.map { it.id to it.updated }
+    LaunchedEffect(rangeStart, rangeEnd, seriesRevision) { loadRange(rangeStart, rangeEnd) }
+    val series = data.items.filter { it.kind == "SERIES" }.associateBy { it.id }
     val shift = { amount: Long ->
         rawDay =
             when (mode) {
@@ -410,12 +456,14 @@ fun CalendarPage(
                         filter.isNotBlank() && item.kind != filter
                 )
                     return@filter false
+                if (item.kind == "TASK" && (!showCompleted && !TaskViews.isPending(item) ||
+                        !TaskViews.visibleOccurrence(item, series[item.seriesId]))) return@filter false
                 if (item.kind == "HABIT")
                     return@filter data.checkins.any {
                         it.habitId == item.id && it.date == date.toString()
                     } ||
                         runCatching {
-                                Recurrence.occurs(
+                                Recurrence.due(
                                     json.decodeFromString<RepeatRule>(item.rule),
                                     date,
                                 )
@@ -467,6 +515,7 @@ fun CalendarPage(
                 { filter = it },
             )
         }
+        item { SettingSwitch("显示已结束任务", checked = showCompleted, onChange = { showCompleted = it }) }
         if (mode != "day") {
             val from =
                 (if (mode == "month") month.atDay(1) else day).with(
@@ -550,7 +599,9 @@ fun CalendarPage(
         if (records.isEmpty()) item { EmptyState("EVENT") { add(day) } }
         items(records, key = { it.id }) { e ->
             Surface(shape = RoundedCornerShape(12.dp)) {
-                Box(Modifier.padding(horizontal = 10.dp)) { ItemRow(e, data, open, toggle) }
+                Box(Modifier.padding(horizontal = 10.dp)) {
+                    ItemRow(e, data, open, { item -> if (item.kind == "HABIT") checkHabit(item, day) else toggle(item) }, checkDate = day)
+                }
             }
         }
     }

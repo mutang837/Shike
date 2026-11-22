@@ -7,7 +7,7 @@ import dev.shike.domain.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
-data class Notice(val message: String, val undo: Item? = null)
+data class Notice(val message: String, val undo: Item? = null, val undoCompletion: Boolean = false)
 
 class AppViewModel(val repo: Repository) : ViewModel() {
     val data = repo.data

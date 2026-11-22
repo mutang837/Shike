@@ -497,7 +497,7 @@ fun SettingsPage(data: AppData, vm: AppViewModel, page: (String) -> Unit, activi
         }
         item {
             Text(
-                "拾刻 · 0.1.0",
+                "拾刻 · 0.2.0",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

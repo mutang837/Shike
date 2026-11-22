@@ -246,10 +246,16 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
                 ?.let { dao.link(Link(item.id, it, "parent")) }
             item.sourceId?.let { dao.link(Link(item.id, it, "source")) }
         }
-        Reminders.schedule(context, item, settings)
+        val series = item.seriesId?.let { id -> all.find { it.id == id } }
+        if (item.seriesId == null || TaskViews.seriesEnabled(series))
+            Reminders.schedule(context, item, settings)
+        else Reminders.cancel(context, item.id)
         if (item.kind == "SERIES") {
             generateInstances()
             Reminders.scheduleAll(context, dao.allItems(), settings)
+        }
+        if (item.seriesId != null && item.state in listOf("DONE", "CANCELLED", "ARCHIVED")) {
+            generateInstances()
         }
         if (
             settings.autoParent &&
@@ -286,6 +292,9 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
         )
         dao.history(History(itemId = item.id, action = "trash", payload = "移入回收站"))
         Reminders.cancel(context, item.id)
+        if (item.kind == "SERIES") {
+            dao.allItems().filter { it.seriesId == item.id }.forEach { Reminders.cancel(context, it.id) }
+        } else if (item.seriesId != null) generateInstances()
         refreshPortableBackup()
     }
 
@@ -297,6 +306,8 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
 
     suspend fun erase(item: Item) {
         db.withTransaction {
+            // A permanently removed occurrence must not reappear under its deterministic ID.
+            if (item.seriesId != null) dao.putConfig(Config("recurrence-skip:${item.id}", "1"))
             dao.eraseItem(item.id)
             dao.eraseLinks(item.id)
             dao.eraseHistory(item.id)
@@ -316,6 +327,9 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
                 }
         }
         Reminders.cancel(context, item.id)
+        if (item.kind == "SERIES") {
+            dao.allItems().filter { it.seriesId == item.id }.forEach { Reminders.cancel(context, it.id) }
+        }
         refreshPortableBackup()
     }
 
@@ -325,9 +339,10 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
         state: CheckState,
         date: LocalDate = LocalDate.now(),
     ) {
-        require(date <= LocalDate.now()) { "不能提前打卡" }
+        require(date <= LocalDate.now(ZoneId.of(habit.zone))) { "不能提前打卡" }
         require(value >= 0 && value.isFinite())
         val rule = json.decodeFromString<RepeatRule>(habit.rule)
+        require(Recurrence.due(rule.copy(paused = false), date)) { "所选日期不在习惯周期内" }
         dao.checkin(
             Checkin(
                 habitId = habit.id,
@@ -361,57 +376,74 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
         refreshPortableBackup()
     }
 
-    suspend fun generateInstances(through: LocalDate = LocalDate.now().plusDays(35)) {
-        val all = dao.allItems()
-        val ids = all.mapTo(hashSetOf()) { it.id }
-        val today = LocalDate.now()
+    /** Materialize today's and the next actionable occurrence, plus a requested calendar range. */
+    suspend fun generateInstances(from: LocalDate? = null, through: LocalDate? = null) {
+        require(from == null && through == null || from != null && through != null &&
+            through >= from && java.time.temporal.ChronoUnit.DAYS.between(from, through) <= 62)
+        val created = mutableListOf<Item>()
         db.withTransaction {
-            for (series in all.filter { it.kind == "SERIES" && it.deletedAt == null }) {
+            val all = dao.allItems()
+            val existing = all.associateBy { it.id }.toMutableMap()
+            val skipped = dao.allConfig().filter { it.key.startsWith("recurrence-skip:") }
+                .mapTo(hashSetOf()) { it.key.substringAfter(':') }
+            val links = dao.allLinks()
+            for (series in all.filter { TaskViews.seriesEnabled(it) }) {
                 val rule =
                     runCatching { json.decodeFromString<RepeatRule>(series.rule) }.getOrNull()
                         ?: continue
-                if (rule.paused) continue
+                val today = LocalDate.now(ZoneId.of(rule.zone))
                 val linked =
-                    dao.allLinks().filter {
+                    links.filter {
                         it.type == "related" && (it.fromId == series.id || it.toId == series.id)
                     }
-                var date = today
-                while (date <= through) {
-                    if (Recurrence.occurs(rule, date)) {
-                        val id = Recurrence.instanceId(series.id, date)
-                        if (ids.add(id)) {
-                            val now = System.currentTimeMillis()
-                            dao.put(
-                                series.copy(
-                                    id = id,
-                                    kind = "TASK",
-                                    state = "TODO",
-                                    start = null,
-                                    due = Recurrence.instant(rule, date),
-                                    created = now,
-                                    updated = now,
-                                    seriesId = series.id,
-                                    occurrence = date.toString(),
-                                    rule = "",
-                                )
-                            )
-                            linked.forEach { l ->
-                                dao.link(Link(id, if (l.fromId == series.id) l.toId else l.fromId))
-                            }
-                        }
+                val dates = linkedSetOf<LocalDate>()
+                if (Recurrence.occurs(rule, today)) dates += today
+                var next = Recurrence.nextOnOrAfter(rule, today.plusDays(1))
+                while (next != null) {
+                    val id = Recurrence.instanceId(series.id, next)
+                    val old = existing[id]
+                    if (id !in skipped && (old == null || TaskViews.isPending(old))) {
+                        dates += next
+                        break
                     }
-                    date = date.plusDays(1)
+                    next = Recurrence.nextOnOrAfter(rule, next.plusDays(1))
+                }
+                if (from != null && through != null) {
+                    var date = maxOf(today, from)
+                    while (date <= through) {
+                        if (Recurrence.occurs(rule, date)) dates += date
+                        date = date.plusDays(1)
+                    }
+                }
+                for (date in dates) {
+                    val id = Recurrence.instanceId(series.id, date)
+                    if (id in existing || id in skipped) continue
+                    val now = System.currentTimeMillis()
+                    val instance = series.copy(
+                        id = id, kind = "TASK", state = "TODO", start = null,
+                        due = Recurrence.instant(rule, date), zone = rule.zone,
+                        created = now, updated = now, seriesId = series.id,
+                        occurrence = date.toString(), rule = "",
+                    )
+                    dao.put(instance)
+                    existing[id] = instance
+                    created += instance
+                    linked.forEach { l -> dao.link(Link(id, if (l.fromId == series.id) l.toId else l.fromId)) }
                 }
             }
         }
+        val settings = readSettings()
+        created.forEach { Reminders.schedule(context, it, settings) }
     }
 
     suspend fun updateSeriesFuture(series: Item, related: List<String>? = null) {
+        val zone = ZoneId.of(series.zone)
         val old =
             dao.allItems().filter {
                 it.seriesId == series.id &&
-                    it.occurrence >= LocalDate.now().toString() &&
+                    it.occurrence >= LocalDate.now(zone).toString() &&
                     it.state == "TODO" &&
+                    !TaskViews.isOverdue(it) &&
                     it.deletedAt == null &&
                     it.updated == it.created
             }
@@ -422,8 +454,9 @@ class Repository(val context: Context, val db: ShikeDb, private val scope: Corou
             }
             save(series, related)
         }
+        val remaining = dao.allItems().mapTo(hashSetOf()) { it.id }
         old.forEach { item ->
-            if (dao.allItems().none { it.id == item.id }) Reminders.cancel(context, item.id)
+            if (item.id !in remaining) Reminders.cancel(context, item.id)
         }
     }
 

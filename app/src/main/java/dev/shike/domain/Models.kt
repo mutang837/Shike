@@ -53,6 +53,22 @@ data class RepeatRule(
 )
 
 object Recurrence {
+    /** Finds the next real occurrence without generating intervening task records. */
+    fun nextOnOrAfter(rule: RepeatRule, from: LocalDate): LocalDate? {
+        if (rule.paused || rule.interval !in 1..366) return null
+        val anchor = LocalDate.parse(rule.anchor)
+        val lower = maxOf(anchor, from)
+        // A monthly interval of 366 months is the largest supported interval.
+        // Start at the later of the anchor and the requested date.
+        val limit = lower.plusMonths(rule.interval.toLong() + 1).plusDays(7)
+        var date = lower
+        while (date <= limit) {
+            if (occurs(rule, date)) return date
+            date = date.plusDays(1)
+        }
+        return null
+    }
+
     fun occurs(rule: RepeatRule, date: LocalDate): Boolean {
         if (rule.paused || rule.interval !in 1..366) return false
         val anchor = LocalDate.parse(rule.anchor)
@@ -176,11 +192,11 @@ object LayoutRules {
 @Serializable
 data class Appearance(
     val theme: String = "system",
-    val accent: Long = 0xFF527361,
+    val accent: Long = 0xFF246B65,
     val background: Long = 0,
     val surface: Long = 0,
     val text: Long = 0,
-    val darkAccent: Long = 0xFFAECDB4,
+    val darkAccent: Long = 0xFFA6D5CC,
     val darkBackground: Long = 0,
     val darkSurface: Long = 0,
     val darkText: Long = 0,

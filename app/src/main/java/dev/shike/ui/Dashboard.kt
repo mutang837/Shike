@@ -10,10 +10,12 @@ import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.shike.data.*
 import dev.shike.domain.*
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -31,7 +33,7 @@ private val widgetTypes =
         "GROUP" to "组合",
     )
 private val palette =
-    listOf(0L, 0xFF527361, 0xFF48698A, 0xFF866780, 0xFF915C49, 0xFF88742F, 0xFF4F7376)
+    listOf(0L, 0xFF246B65, 0xFF48698A, 0xFF866780, 0xFF915C49, 0xFF88742F, 0xFF4F7376)
 
 @Composable
 fun ColorChoices(color: Long, select: (Long) -> Unit) {
@@ -43,7 +45,7 @@ fun ColorChoices(color: Long, select: (Long) -> Unit) {
             FilterChip(
                 selected = color == c,
                 onClick = { select(c) },
-                label = { Text(listOf("默认", "松绿", "雾蓝", "淡紫", "陶红", "麦黄", "湖青")[i]) },
+                label = { Text(listOf("默认", "青绿", "雾蓝", "淡紫", "陶红", "麦黄", "湖青")[i]) },
                 leadingIcon = {
                     if (c != 0L)
                         Icon(ShikeIcons.Circle, null, Modifier.size(13.dp), tint = Color(c))
@@ -101,13 +103,16 @@ fun Dashboard(
         val next = list + result
         if (LayoutRules.validate(next)) save(space.copy(widgets = next)) else vm.run("积木数量已达上限") {}
     }
-    val scroll = remember(space.id) { ScrollState(0) }
+    val scroll = rememberScrollState()
+    val now = LocalShikeNow.current
+    val pendingToday = TaskViews.collection(data.items, "today", now)
+    val lateToday = pendingToday.count { TaskViews.isOverdue(it, now) }
     Column(
         Modifier.fillMaxSize()
             .verticalScroll(scroll)
-            .padding(horizontal = 20.dp)
+            .padding(horizontal = 16.dp)
             .padding(bottom = 100.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 2.dp),
@@ -115,17 +120,22 @@ fun Dashboard(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    LocalDate.now()
+                    now.atZone(ZoneId.systemDefault()).toLocalDate()
                         .format(
                             DateTimeFormatter.ofPattern("M月d日  EEEE", Locale.SIMPLIFIED_CHINESE)
                         ),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
                     if (editing) "编辑布局" else "今天",
                     style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.Bold,
+                )
+                if (!editing) Text(
+                    if (lateToday > 0) "${pendingToday.size} 项待处理 · $lateToday 项逾期" else "${pendingToday.size} 项待处理",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             FilledTonalIconButton(onClick = { setEditing(!editing) }) {
@@ -241,7 +251,7 @@ private fun WidgetGrid(
     delete: (Widget) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val twoColumns = maxWidth >= 345.dp && !data.settings.largeTargets
+        val twoColumns = maxWidth >= 372.dp && !data.settings.largeTargets && data.settings.fontScale <= 1.15f
         val children = list.filter { it.parent == parent }
         val rows = mutableListOf<List<Widget>>()
         var i = 0
@@ -350,7 +360,7 @@ private fun WidgetCard(
         else Modifier
     Surface(
         modifier.then(dragModifier),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(18.dp),
         color = a.surface,
         border = BorderStroke(1.dp, if (editing) tint.copy(alpha = .5f) else a.outlineVariant),
     ) {
@@ -359,40 +369,48 @@ private fun WidgetCard(
                 Modifier.fillMaxWidth()
                     .combinedClickable(
                         onClick = {
-                            if (w.collapsed) update(w.copy(collapsed = false))
-                            else if (w.type in listOf("calendar", "statistics", "review"))
-                                page(w.type)
+                            when {
+                                w.collapsed -> update(w.copy(collapsed = false))
+                                editing -> menu = true
+                                w.type == "CAPTURE" -> add("CAPTURE")
+                                w.type == "GROUP" -> if (!w.locked) update(w.copy(collapsed = true))
+                                else -> page(w.type)
+                            }
                         },
                         onLongClick = { menu = true },
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    if (w.icon == "Star") ShikeIcons.StarOutline
-                    else if (w.icon == "Home") ShikeIcons.Home else kindIcon(w.type),
-                    null,
-                    Modifier.size(19.dp),
-                    tint = tint,
-                )
-                Spacer(Modifier.width(7.dp))
+                Box(Modifier.size(32.dp).background(tint.copy(alpha = .12f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (w.icon == "Star") ShikeIcons.StarOutline
+                        else if (w.icon == "Home") ShikeIcons.Home else kindIcon(w.type),
+                        null, Modifier.size(20.dp), tint = tint,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
                 Text(
                     w.title,
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                if (editing || w.type != "CAPTURE")
-                    Box {
+                Box {
+                    if (editing || w.collapsed) {
                         IconButton(
                             onClick = { menu = true },
-                            modifier =
-                                Modifier.size(if (data.settings.largeTargets) 48.dp else 38.dp),
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
                                 if (w.locked) ShikeIcons.Lock else ShikeIcons.MoreHoriz,
                                 "积木菜单",
                             )
                         }
+                    } else if (w.type != "CAPTURE" && w.type != "GROUP") {
+                        Icon(ShikeIcons.ChevronRight, null, Modifier.size(20.dp), tint = a.onSurfaceVariant)
+                    }
                         DropdownMenu(menu, { menu = false }) {
                             if (!w.locked) {
                                 DropdownMenuItem(
@@ -453,20 +471,25 @@ private fun WidgetCard(
                                 },
                             )
                         }
-                    }
+                }
             }
             if (!w.collapsed) {
                 Spacer(Modifier.height(10.dp))
                 when (w.type) {
                     "CAPTURE" ->
-                        FilledTonalButton(
+                        Surface(
                             onClick = { add("CAPTURE") },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = a.primaryContainer,
+                            contentColor = a.onPrimaryContainer,
                         ) {
-                            Icon(ShikeIcons.Add, null)
-                            Spacer(Modifier.width(5.dp))
-                            Text("新建快速记录")
+                            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(ShikeIcons.EditNote, null, Modifier.size(20.dp), tint = a.primary)
+                                Spacer(Modifier.width(10.dp))
+                                Text("记录此刻的想法…", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                Icon(ShikeIcons.Add, null, Modifier.size(20.dp), tint = a.primary)
+                            }
                         }
                     "GROUP" -> children()
                     "calendar",
@@ -477,9 +500,16 @@ private fun WidgetCard(
                             Icon(ShikeIcons.ChevronRight, null)
                         }
                     else -> {
-                        val today = LocalDate.now()
+                        val now = LocalShikeNow.current
+                        val today = now.atZone(ZoneId.systemDefault()).toLocalDate()
                         val records =
-                            data.active
+                            (if (w.type == "TASK") {
+                                when (w.filter) {
+                                    "DONE" -> TaskViews.collection(data.items, "DONE", now)
+                                    "today" -> TaskViews.collection(data.items, "today", now)
+                                    else -> TaskViews.queue(data.items, now)
+                                }
+                            } else data.active)
                                 .filter { item ->
                                     item.kind == w.type &&
                                         when {
@@ -487,13 +517,10 @@ private fun WidgetCard(
                                                 w.filter.substringAfter(":") in item.tags.split(",")
                                             w.filter.startsWith("category:") ->
                                                 item.categoryId == w.filter.substringAfter(":")
+                                            w.type == "TASK" -> true
                                             w.filter == "today" ->
                                                 item.due == null ||
-                                                    localDate(item.due, item.zone) == today ||
-                                                    w.type == "TASK" &&
-                                                        item.state in listOf("TODO", "DOING") &&
-                                                        localDate(item.due, item.zone)
-                                                            ?.isBefore(today) == true
+                                                    localDate(item.due, item.zone) == today
                                             w.filter == "open" ->
                                                 item.state in listOf("TODO", "DOING", "PAUSED")
                                             else -> true
@@ -509,7 +536,7 @@ private fun WidgetCard(
                                                             json.decodeFromString<RepeatRule>(
                                                                 item.rule
                                                             ),
-                                                            today,
+                                                            LocalDate.now(ZoneId.of(item.zone)),
                                                         )
                                                     }
                                                     .getOrDefault(true)
@@ -526,12 +553,12 @@ private fun WidgetCard(
                                 }
                         if (records.isEmpty()) EmptyState(w.type) { add(w.type) }
                         else
-                            records.take(w.limit).forEach { item ->
-                                ItemRow(item, data, open, toggle, w.showDetails)
-                                HorizontalDivider()
+                            records.take(w.limit).forEachIndexed { index, item ->
+                                ItemRow(item, data, open, toggle, w.showDetails, density = density)
+                                if (index < minOf(records.size, w.limit) - 1) HorizontalDivider(color = a.outlineVariant)
                             }
                         if (records.isNotEmpty())
-                            TextButton(onClick = { page(w.type) }) { Text("查看全部") }
+                            TextButton(onClick = { page(w.type) }) { Text(if (records.size > w.limit) "查看全部 ${records.size} 项" else "查看全部") }
                     }
                 }
             }
@@ -595,7 +622,7 @@ private fun WidgetConfig(
                 Choice(
                     "筛选",
                     value.filter,
-                    listOf("all" to "全部", "today" to "今天", "open" to "待处理"),
+                    (if (value.type == "TASK") listOf("all" to "所有待处理", "today" to "今天", "open" to "待处理", "DONE" to "已完成") else listOf("all" to "全部", "today" to "今天", "open" to "待处理")),
                     { value = value.copy(filter = it) },
                 )
                 Choice(

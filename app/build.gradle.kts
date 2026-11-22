@@ -12,8 +12,9 @@ android {
         applicationId = "dev.shike"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-alpha"
+        versionCode = 2
+        versionName = "0.2.0-alpha"
+        resValue("string", "app_name", "拾刻")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -22,6 +23,12 @@ android {
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     testOptions { unitTests.isReturnDefaultValues = true }
     buildTypes {
+        create("migration") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".migration"
+            matchingFallbacks += listOf("debug")
+            resValue("string", "app_name", "拾刻（迁移版）")
+        }
         release { isMinifyEnabled = true; isShrinkResources = true }
         create("preview") {
             initWith(getByName("release"))

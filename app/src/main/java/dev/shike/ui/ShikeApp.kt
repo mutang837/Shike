@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -23,6 +24,8 @@ import dev.shike.data.*
 import dev.shike.domain.*
 import dev.shike.security.Crypto
 import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.*
 
 data class EditRequest(
@@ -41,6 +44,15 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
     val settings = data.settings
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+    val now by produceState(initialValue = Instant.now()) {
+        while (true) {
+            value = Instant.now()
+            delay(60_000L)
+        }
+    }
+    val today = now.atZone(ZoneId.systemDefault()).toLocalDate()
+    LaunchedEffect(today, data.ready) { if (data.ready) vm.run { repo.generateInstances() } }
+    val pageStates = rememberSaveableStateHolder()
     var page by rememberSaveable { mutableStateOf("home") }
     var spaceId by rememberSaveable { mutableStateOf("") }
     var preferredTab by rememberSaveable { mutableIntStateOf(1) }
@@ -50,7 +62,7 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
     var quick by remember { mutableStateOf(false) }
     var newMenu by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<EditRequest?>(null) }
-    var check by remember { mutableStateOf<Item?>(null) }
+    var check by remember { mutableStateOf<Pair<Item, LocalDate>?>(null) }
     var savedCapture by remember { mutableStateOf<Item?>(null) }
     var editingLayout by rememberSaveable { mutableStateOf(false) }
     var bootFailure by remember { mutableStateOf("") }
@@ -72,7 +84,13 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                         duration = SnackbarDuration.Short,
                     ) == SnackbarResult.ActionPerformed
                 ) {
-                    notice.undo?.let { item -> vm.run("已恢复") { repo.restore(item) } }
+                    notice.undo?.let { item -> vm.run("已恢复") {
+                        if (notice.undoCompletion) {
+                            val current = repo.dao.allItems().firstOrNull { it.id == item.id }
+                            if (current != null && current.state == "DONE" && current.deletedAt == null)
+                                repo.transition(current, TaskState.valueOf(item.state))
+                        } else repo.restore(item)
+                    } }
                 }
             }
         }
@@ -86,12 +104,12 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
     BackHandler(page != "home" || editingLayout) {
         if (editingLayout) editingLayout = false else page = "home"
     }
-    ShikeTheme(settings) {
+    CompositionLocalProvider(LocalShikeNow provides now) { ShikeTheme(settings) {
         val haptic = LocalHapticFeedback.current
         val open: (Item) -> Unit = { edit = EditRequest(it.kind, it) }
         val toggle: (Item) -> Unit = { item ->
             when (item.kind) {
-                "HABIT" -> check = item
+                "HABIT" -> check = item to LocalDate.now(ZoneId.of(item.zone))
                 "TASK" -> {
                     if (settings.haptic) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     vm.run {
@@ -99,6 +117,7 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                             item,
                             if (item.state == "DONE") TaskState.TODO else TaskState.DONE,
                         )
+                        if (item.state != "DONE") vm.notices.emit(Notice("已完成 · ${item.title}", item, undoCompletion = true))
                     }
                 }
                 else -> open(item)
@@ -273,10 +292,10 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                 "home" -> {
                                     Row(
                                         Modifier.fillMaxWidth()
-                                            .padding(horizontal = 20.dp, vertical = 8.dp)
+                                            .padding(horizontal = 16.dp, vertical = 8.dp)
                                             .background(
                                                 MaterialTheme.colorScheme.surfaceContainer,
-                                                RoundedCornerShape(12.dp),
+                                                RoundedCornerShape(14.dp),
                                             )
                                             .padding(4.dp),
                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -296,16 +315,16 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                                 },
                                                 modifier = Modifier.weight(1f),
                                                 selected = selected,
-                                                shape = RoundedCornerShape(8.dp),
+                                                shape = RoundedCornerShape(10.dp),
                                                 color =
-                                                    if (selected) MaterialTheme.colorScheme.surface
+                                                    if (selected) MaterialTheme.colorScheme.primaryContainer
                                                     else MaterialTheme.colorScheme.surfaceContainer,
                                                 contentColor =
-                                                    if (selected) MaterialTheme.colorScheme.primary
+                                                    if (selected) MaterialTheme.colorScheme.onPrimaryContainer
                                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                             ) {
                                                 Box(
-                                                    Modifier.padding(vertical = 10.dp),
+                                                    Modifier.heightIn(min = 48.dp).padding(vertical = 8.dp),
                                                     contentAlignment = Alignment.Center,
                                                 ) {
                                                     Text(
@@ -324,7 +343,7 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                         modifier = Modifier.fillMaxSize(),
                                         userScrollEnabled = !editingLayout,
                                     ) { tab ->
-                                        when (tab) {
+                                        pageStates.SaveableStateProvider("${workspace?.id.orEmpty()}:$tab") { when (tab) {
                                             0 -> RecordPage(data, open, { quick = true }, add)
                                             1 ->
                                                 if (workspace != null)
@@ -349,7 +368,7 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                                     )
                                                 else EmptyState("CAPTURE")
                                             else -> Overview(data, { page = it })
-                                        }
+                                        } }
                                     }
                                 }
                                 "settings" -> SettingsPage(data, vm, { page = it }, activity)
@@ -359,7 +378,10 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                         page = "home"
                                     }
                                 "calendar" ->
-                                    CalendarPage(data, open, toggle) { day ->
+                                    CalendarPage(data, open, toggle,
+                                        { item, date -> check = item to date },
+                                        { from, through -> vm.run { repo.generateInstances(from, through) } },
+                                    ) { day ->
                                         edit = EditRequest("EVENT", day = day)
                                     }
                                 "statistics",
@@ -407,8 +429,8 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                 text = {
                     Column {
                         Text("原始内容已经保存。可以继续整理为：")
-                        Row {
-                            listOf("TASK", "NOTE", "EVENT").forEach { k ->
+                        listOf("TASK", "NOTE", "EVENT", "HABIT", "PLAN").chunked(3).forEach { row -> Row {
+                            row.forEach { k ->
                                 TextButton(
                                     onClick = {
                                         savedCapture = null
@@ -418,7 +440,7 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                                     Text(Kind.valueOf(k).label)
                                 }
                             }
-                        }
+                        } }
                     }
                 },
                 confirmButton = { TextButton(onClick = { savedCapture = null }) { Text("稍后整理") } },
@@ -433,18 +455,19 @@ fun ShikeApp(repo: Repository, activity: MainActivity, initialItem: String?) {
                     { edit = null },
                     { item -> edit = EditRequest(item.kind, item) },
                     { kind, parent -> edit = EditRequest(kind, parent = parent) },
+                    { kind, source -> edit = EditRequest(kind, source = source) },
                 )
             }
         }
-        check?.let { item ->
-            CheckinDialog(item, data, { check = null }) { value, state, date ->
+        check?.let { (item, initialDate) ->
+            CheckinDialog(item, data, { check = null }, initialDate) { value, state, date ->
                 vm.run("打卡已保存") {
                     repo.checkin(item, value, state, date)
                     withContext(Dispatchers.Main) { check = null }
                 }
             }
         }
-    }
+    } }
 }
 
 fun pageTitle(page: String) =

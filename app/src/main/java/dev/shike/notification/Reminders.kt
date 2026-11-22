@@ -52,12 +52,10 @@ object Reminders {
                 val rule =
                     runCatching { json.decodeFromString<RepeatRule>(item.rule) }.getOrNull()
                         ?: return
-                (0L..370L)
-                    .map { LocalDate.now(ZoneId.of(rule.zone)).plusDays(it) }
-                    .firstOrNull {
-                        Recurrence.occurs(rule, it) && Recurrence.instant(rule, it) > now
-                    }
-                    ?.let { Recurrence.instant(rule, it) } ?: return
+                val today = LocalDate.now(ZoneId.of(rule.zone))
+                val first = if (Recurrence.instant(rule, today) > now) today else today.plusDays(1)
+                Recurrence.nextOnOrAfter(rule, first)?.let { Recurrence.instant(rule, it) }
+                    ?: return
             } else (item.due ?: return) - item.reminderMinutes * 60000L
         if (at <= now) return
         set(context, item.id, item.title, quietAdjusted(at, settings), item.kind == "TASK")
@@ -96,7 +94,12 @@ object Reminders {
     }
 
     fun scheduleAll(context: Context, items: List<Item>, settings: Appearance) {
-        items.forEach { schedule(context, it, settings) }
+        val series = items.filter { it.kind == "SERIES" }.associateBy { it.id }
+        items.forEach { item ->
+            if (item.seriesId == null || TaskViews.seriesEnabled(series[item.seriesId]))
+                schedule(context, item, settings)
+            else cancel(context, item.id)
+        }
         cancel(context, "review-daily")
         if (settings.notifications && settings.reviewReminders) {
             val now = ZonedDateTime.now()
@@ -156,14 +159,16 @@ class ReminderReceiver : BroadcastReceiver() {
                 val id = intent.getStringExtra("id") ?: return@launch
                 val time = intent.getLongExtra("time", 0)
                 val marker = "reminded:$id:$time"
-                val item = repo.dao.allItems().find { it.id == id }
+                val items = repo.dao.allItems()
+                val item = items.find { it.id == id }
                 val s = repo.readSettings()
                 if (!s.notifications) return@launch
                 if (
                     id != "review-daily" &&
                         (item == null ||
                             item.deletedAt != null ||
-                            item.state in listOf("DONE", "CANCELLED", "ARCHIVED"))
+                            item.state in listOf("DONE", "CANCELLED", "ARCHIVED") ||
+                            item.seriesId != null && !TaskViews.seriesEnabled(items.find { it.id == item.seriesId }))
                 )
                     return@launch
                 if (repo.dao.allConfig().none { it.key == marker }) {
@@ -171,6 +176,7 @@ class ReminderReceiver : BroadcastReceiver() {
                     Reminders.show(context, id, item?.title ?: "留一点时间，回顾今天")
                 }
                 if (item?.kind == "HABIT") Reminders.schedule(context, item, s)
+                if (item?.seriesId != null) repo.generateInstances()
                 if (id == "review-daily") Reminders.scheduleAll(context, repo.dao.allItems(), s)
             } finally {
                 result.finish()

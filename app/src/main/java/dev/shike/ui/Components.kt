@@ -7,6 +7,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -27,6 +29,9 @@ fun kindIcon(kind: String): ImageVector =
         "TAG" -> ShikeIcons.Tag
         "CATEGORY" -> ShikeIcons.Category
         "REVIEW" -> ShikeIcons.AutoStories
+        "calendar" -> ShikeIcons.CalendarToday
+        "statistics" -> ShikeIcons.BarChart
+        "review" -> ShikeIcons.AutoStories
         "GROUP" -> ShikeIcons.Widgets
         else -> ShikeIcons.EditNote
     }
@@ -76,11 +81,11 @@ fun SectionTitle(
 fun EmptyState(kind: String, onAdd: (() -> Unit)? = null) {
     val label = runCatching { Kind.valueOf(kind).label }.getOrDefault("内容")
     Column(
-        Modifier.fillMaxWidth().padding(vertical = 28.dp),
+        Modifier.fillMaxWidth().padding(vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
-            Modifier.size(52.dp)
+            Modifier.size(44.dp)
                 .background(MaterialTheme.colorScheme.surfaceContainer, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
@@ -89,14 +94,15 @@ fun EmptyState(kind: String, onAdd: (() -> Unit)? = null) {
         Spacer(Modifier.height(12.dp))
         Text(
             when (kind) {
-                "TASK" -> "给今天留一点方向"
-                "HABIT" -> "小小的坚持，从这里开始"
-                "NOTE" -> "让想法有处可放"
+                "TASK" -> "暂无待处理任务"
+                "HABIT" -> "暂无待打卡习惯"
+                "NOTE" -> "暂无笔记"
                 "EVENT" -> "近期暂无日程"
                 "CAPTURE" -> "有想法，就先记下来"
                 else -> "这里还没有$label"
             },
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (onAdd != null) TextButton(onClick = onAdd) { Text("创建$label") }
     }
@@ -177,18 +183,29 @@ fun ItemRow(
     onOpen: (Item) -> Unit,
     onToggle: (Item) -> Unit,
     showDetails: Boolean = true,
+    density: String = data.settings.density,
+    checkDate: LocalDate? = null,
 ) {
     val done = item.state == "DONE"
     val isTask = item.kind == "TASK"
     val habit = item.kind == "HABIT"
-    val log = if (habit) data.effective(item) else null
+    val log = if (habit) data.effective(item, checkDate ?: LocalDate.now(ZoneId.of(item.zone))) else null
+    val overdue = TaskViews.isOverdue(item, LocalShikeNow.current)
+    val scheme = MaterialTheme.colorScheme
     Row(
         Modifier.fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clickable { onOpen(item) }
-            .padding(vertical = if (data.settings.density == "compact") 4.dp else 10.dp),
+            .padding(vertical = when (density) { "compact" -> 2.dp; "relaxed" -> 10.dp; else -> 6.dp }),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (isTask) Checkbox(done, onCheckedChange = { onToggle(item) })
+        if (isTask) Checkbox(
+            done,
+            onCheckedChange = { onToggle(item) },
+            modifier = Modifier.semantics {
+                contentDescription = if (done) "重新打开 ${item.title}" else "完成 ${item.title}"
+            },
+        )
         else if (habit)
             IconButton(onClick = { onToggle(item) }) {
                 Icon(
@@ -219,6 +236,7 @@ fun ItemRow(
             Text(
                 item.title,
                 style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 color =
@@ -236,11 +254,20 @@ fun ItemRow(
                             else "目标 ${item.target} ${item.unit}"
                         item.kind == "PLAN" ->
                             "${data.progress(item)}% · ${formatDate(item.due,allDay=true)}"
+                        item.kind == "SERIES" -> {
+                            val rule = runCatching { json.decodeFromString<RepeatRule>(item.rule) }.getOrNull()
+                            if (rule == null) "重复规则不可用" else {
+                                val unit = when (rule.unit) { "WEEK" -> "周"; "MONTH" -> "月"; else -> "天" }
+                                val interval = "每 ${rule.interval} $unit"
+                                if (rule.paused) "$interval · 已暂停" else "$interval · 重复任务"
+                            }
+                        }
                         item.kind == "NOTE" || item.kind == "CAPTURE" ->
                             item.body.take(65).replace('\n', ' ')
                         else ->
                             listOfNotNull(
-                                    item.due?.let { formatDate(it, item.zone, item.allDay) },
+                                    item.due?.let { (if (overdue) "逾期 · " else "") + formatDate(it, item.zone, item.allDay) },
+                                    if (item.due == null && item.start != null) "开始 ${formatDate(item.start, item.zone, item.allDay)}" else null,
                                     if (item.state != "TODO")
                                         runCatching { TaskState.valueOf(item.state).label }
                                             .getOrNull()
@@ -254,15 +281,7 @@ fun ItemRow(
                         label,
                         style = MaterialTheme.typography.bodySmall,
                         color =
-                            if (
-                                item.due != null &&
-                                    item.due < System.currentTimeMillis() &&
-                                    isTask &&
-                                    !done &&
-                                    TaskState.valueOf(item.state).active
-                            )
-                                MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (overdue) scheme.error else scheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

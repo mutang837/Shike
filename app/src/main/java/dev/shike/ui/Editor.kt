@@ -29,6 +29,7 @@ fun ItemEditor(
     close: () -> Unit,
     open: (Item) -> Unit,
     addChild: (String, String) -> Unit,
+    convert: (String, Item) -> Unit,
 ) {
     val original = request.item
     val originalKind = Kind.valueOf(request.kind)
@@ -94,7 +95,9 @@ fun ItemEditor(
     var editingSeries by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
-    val available = data.active
+    // Generated occurrences must not monopolize the association picker.
+    val available = (data.active.filter { it.kind != "TASK" || it.id in related || it.parentId == id || it.id == parent } +
+        TaskViews.queue(data.items)).distinctBy { it.id }
     val task = kind == "TASK"
     val recurring = kind == "SERIES" || kind == "HABIT"
     val timed = kind in listOf("TASK", "EVENT", "PLAN")
@@ -140,7 +143,7 @@ fun ItemEditor(
                 saving = true
                 vm.run {
                     try {
-                        if (original?.kind == "SERIES" && original.rule != next.rule)
+                        if (original?.kind == "SERIES")
                             vm.repo.updateSeriesFuture(next, related.toList())
                         else vm.repo.save(next, related.toList())
                         withContext(Dispatchers.Main) { close() }
@@ -160,8 +163,8 @@ fun ItemEditor(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Surface(
-            Modifier.fillMaxWidth()
-                .widthIn(max = 680.dp)
+            Modifier.widthIn(max = 680.dp)
+                .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 22.dp)
                 .imePadding(),
             shape = RoundedCornerShape(20.dp),
@@ -245,6 +248,16 @@ fun ItemEditor(
                                 Text("重复系列选项")
                             }
                     }
+                    if (kind == "CAPTURE" && original != null) {
+                        Text("整理为", style = MaterialTheme.typography.titleSmall)
+                        listOf("TASK", "NOTE", "HABIT", "PLAN", "EVENT").chunked(3).forEach { row ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                row.forEach { targetKind ->
+                                    AssistChip(onClick = { convert(targetKind, original) }, label = { Text(Kind.valueOf(targetKind).label) })
+                                }
+                            }
+                        }
+                    }
                     if (timed) {
                         SettingSwitch("全天", checked = allDay, onChange = { allDay = it })
                         DateField("开始时间", start, zone, allDay, { start = it })
@@ -271,9 +284,9 @@ fun ItemEditor(
                                 "MONTH" to "每月",
                                 "CUSTOM" to "自定义天数",
                             ),
-                            { rule = rule.copy(unit = it) },
+                            { rule = rule.copy(unit = it, interval = if (it == "DAY") 1 else rule.interval) },
                         )
-                        if (rule.unit == "CUSTOM")
+                        if (rule.unit in listOf("CUSTOM", "WEEK", "MONTH"))
                             OutlinedTextField(
                                 if (rule.interval == 0) "" else rule.interval.toString(),
                                 {
@@ -283,7 +296,7 @@ fun ItemEditor(
                                                 it.filter(Char::isDigit).take(3).toIntOrNull() ?: 0
                                         )
                                 },
-                                label = { Text("每隔多少天") },
+                                label = { Text(when (rule.unit) { "WEEK" -> "每隔多少周"; "MONTH" -> "每隔多少月"; else -> "每隔多少天" }) },
                                 keyboardOptions =
                                     KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier.fillMaxWidth(),
@@ -314,15 +327,16 @@ fun ItemEditor(
                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
                                 (1..7).forEach { n ->
-                                    val selected = n in rule.weekdays
+                                    val days = rule.weekdays.ifEmpty { listOf(anchor.dayOfWeek.value) }
+                                    val selected = n in days
                                     FilterChip(
                                         selected,
                                         {
                                             rule =
                                                 rule.copy(
                                                     weekdays =
-                                                        if (selected) rule.weekdays - n
-                                                        else rule.weekdays + n
+                                                        if (selected && days.size > 1) days - n
+                                                        else if (selected) days else days + n
                                                 )
                                         },
                                         { Text("一二三四五六日"[n - 1].toString()) },
@@ -330,7 +344,12 @@ fun ItemEditor(
                                 }
                             }
                         }
-                        TimeField("提醒时间", rule.time) { rule = rule.copy(time = it) }
+                        if (kind == "SERIES") {
+                            SettingSwitch("全天任务", "当天结束后才标记逾期", allDay, { allDay = it })
+                            Choice("优先级", priority.toString(), listOf("0" to "低", "1" to "普通", "3" to "高"), { priority = it.toInt() })
+                        }
+                        if (kind == "SERIES" && !allDay) TimeField("截止时间", rule.time) { rule = rule.copy(time = it) }
+                        else if (remind) TimeField("提醒时间", rule.time) { rule = rule.copy(time = it) }
                     }
                     if (kind == "HABIT") {
                         Choice(
@@ -530,6 +549,23 @@ fun ItemEditor(
                             Text(if (historyOpen) "收起历史" else "查看历史")
                         }
                         if (historyOpen) {
+                            if (kind == "SERIES") {
+                                val today = LocalDate.now(ZoneId.of(original.zone))
+                                val instances = data.active.filter { it.seriesId == id }
+                                val historyItems = instances.filter {
+                                    it.occurrence <= today.toString() || it.updated != it.created || it.state != "TODO"
+                                }.sortedByDescending { it.occurrence }
+                                val next = instances.filter { TaskViews.isPending(it) && it.occurrence > today.toString() }.minByOrNull { it.occurrence }
+                                Text("历史实例 · ${historyItems.size} 项", style = MaterialTheme.typography.titleSmall)
+                                next?.let { e -> TextButton(onClick = { open(e) }) { Text("下一次 · ${e.occurrence}") } }
+                                var displayed by remember(id) { mutableIntStateOf(30) }
+                                historyItems.take(displayed).forEach { entry ->
+                                    TextButton(onClick = { open(entry) }) {
+                                        Text("${entry.occurrence} · ${TaskState.valueOf(entry.state).label}")
+                                    }
+                                }
+                                if (displayed < historyItems.size) TextButton(onClick = { displayed += 30 }) { Text("显示更多历史") }
+                            }
                             if (kind == "HABIT")
                                 Text(
                                     "连续完成 ${data.streak(original)} 个周期",
@@ -697,9 +733,10 @@ fun CheckinDialog(
     item: Item,
     data: AppData,
     close: () -> Unit,
+    initialDate: LocalDate = LocalDate.now(ZoneId.of(item.zone)),
     save: (Double, CheckState, LocalDate) -> Unit,
 ) {
-    var date by remember { mutableStateOf(LocalDate.now()) }
+    var date by remember(item.id, initialDate) { mutableStateOf(initialDate) }
     val log = data.effective(item, date)
     var value by
         remember(date) { mutableStateOf((log?.value ?: item.target).toString().removeSuffix(".0")) }
@@ -757,7 +794,10 @@ fun CheckinDialog(
                                 if (item.habitType == "完成型") item.target else value.toDoubleOrNull()
                             else -> value.toDoubleOrNull()
                         }
-                    if (actual == null || !actual.isFinite() || actual < 0) error = "请输入有效数值"
+                    val rule = runCatching { json.decodeFromString<RepeatRule>(item.rule) }.getOrNull()
+                    if (date > LocalDate.now(ZoneId.of(item.zone))) error = "不能提前打卡"
+                    else if (rule == null || !Recurrence.due(rule.copy(paused = false), date)) error = "所选日期不在习惯周期内"
+                    else if (actual == null || !actual.isFinite() || actual < 0) error = "请输入有效数值"
                     else if (status == "PARTIAL" && (actual <= 0 || actual >= item.target))
                         error = "部分完成量须大于 0 且低于目标"
                     else if (status == "COMPLETE" && actual < item.target)
